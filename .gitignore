@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Terraform (defense in depth - the authoritative rules live in
+# terraform/.gitignore, relative to that directory; these are repeated
+# here in case any .tf/.tfstate files ever end up outside terraform/)
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfvars
+**/*.tfvars.json
+**/crash.log
+**/crash.*.log
+**/*.pem
+**/*.key
+
+# Local scratch / generated output
+**/results/
+*.tmp
+*.log
