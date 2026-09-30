@@ -120,6 +120,16 @@ resource "aws_ec2_transit_gateway_route" "london_to_ireland" {
   destination_cidr_block         = aws_subnet.privatelink_ireland[0].cidr_block
   transit_gateway_attachment_id  = aws_ec2_transit_gateway_peering_attachment.london_to_ireland[0].id
   transit_gateway_route_table_id = aws_ec2_transit_gateway.london[0].association_default_route_table_id
+
+  # A peering attachment isn't truly `available` until BOTH the
+  # requester's creation AND the accepter's acceptance complete. This
+  # route only references the requester attachment's ID above, which
+  # doesn't force Terraform to wait for the accepter (a separate
+  # resource, in the OTHER region's provider) to finish first - without
+  # this explicit dependency, the route can fire while the attachment
+  # is still transitioning, causing a real (confirmed via an actual
+  # failed apply) "IncorrectState: ... is in invalid state" error.
+  depends_on = [aws_ec2_transit_gateway_peering_attachment_accepter.ireland_accepts_london]
 }
 
 resource "aws_ec2_transit_gateway_route" "ireland_to_london" {

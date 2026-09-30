@@ -46,29 +46,19 @@ locals {
     ]) > 0
   ]
 
-  # Extract just the "host1:port1,host2:port2,..." segment from each
-  # entry's expanded (non-SRV) connection_string, e.g.
-  # "mongodb://host1:1024,host2:1025/?ssl=true&authSource=admin"
-  # -> "host1:1024,host2:1025"
-  mongos_host_lists = [
-    for pe in local.accessible_private_endpoints :
-    split(",", regex("^mongodb://([^/]+)/", pe.connection_string)[0])
-  ]
-
-  mongos_hosts_combined = join(",", distinct(flatten(local.mongos_host_lists)))
-
-  # Reuse the query-string suffix (dbname + options, e.g.
-  # "?ssl=true&authSource=admin") from whichever entry happens to be
-  # first - Atlas returns equivalent options for every region of the
-  # same cluster.
-  mongos_uri_suffix = try(
-    regex("^mongodb://[^/]+/(.*)$", local.accessible_private_endpoints[0].connection_string)[0],
-    "?ssl=true"
-  )
-
   mongo_uri_public = mongodbatlas_advanced_cluster.this.connection_strings.standard_srv
 
-  mongo_uri_combined_private = length(local.accessible_private_endpoints) > 0 ? "mongodb://${urlencode(var.db_username)}:${urlencode(var.db_password)}@${local.mongos_hosts_combined}/${local.mongos_uri_suffix}" : null
+  # Use Atlas's own PrivateLink SRV record (e.g.
+  # "mongodb+srv://<cluster>-pl-0.<id>.mongodb.net") rather than
+  # manually expanding the non-SRV connection_string into an explicit
+  # host:port seed list. Functionally equivalent (the SRV record
+  # resolves to the exact same mongos set, and the driver's own
+  # topology monitoring marks unreachable members as such regardless
+  # of URI form - see ARCHITECTURE.md), but the SRV form auto-updates
+  # if Atlas ever changes the underlying mongos topology, and doesn't
+  # require this file to keep reconstructing/parsing connection
+  # strings by hand.
+  mongo_uri_private_srv = length(local.accessible_private_endpoints) > 0 ? local.accessible_private_endpoints[0].srv_connection_string : null
 
   # Atlas doesn't populate connection_strings.private_endpoint in the
   # SAME apply that creates the endpoint-linking resources (there's no
@@ -79,12 +69,12 @@ locals {
   # rather than hard-failing the plan. Expect a second `terraform
   # apply` to be needed after the endpoints go AVAILABLE before the
   # private connection strings actually show up.
-  mongo_uri = local.mongo_uri_combined_private != null ? (
-    "${local.mongo_uri_combined_private}${strcontains(local.mongos_uri_suffix, "?") ? "&" : "?"}readPreference=${var.kafka_read_preference}"
-    ) : "${replace(
-      local.mongo_uri_public,
-      "mongodb+srv://",
-      "mongodb+srv://${urlencode(var.db_username)}:${urlencode(var.db_password)}@"
+  mongo_uri_base = coalesce(local.mongo_uri_private_srv, local.mongo_uri_public)
+
+  mongo_uri = "${replace(
+    local.mongo_uri_base,
+    "mongodb+srv://",
+    "mongodb+srv://${urlencode(var.db_username)}:${urlencode(var.db_password)}@"
   )}/?readPreference=${var.kafka_read_preference}"
 
   # jpclient1 = London (EU_WEST_2) = same region as the Atlas cluster's

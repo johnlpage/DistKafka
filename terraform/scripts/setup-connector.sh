@@ -67,6 +67,18 @@ if ! command -v pip3 >/dev/null 2>&1; then
 fi
 pip3 install --quiet pymongo kafka-python
 
+# Install mongosh, so you can connect directly with the same combined
+# multi-region connection string from .env, e.g.:
+#   set -a; source .env; set +a; mongosh "$MONGO_URI"
+MONGOSH_VERSION="2.12.0"
+if ! command -v mongosh >/dev/null 2>&1; then
+  MONGOSH_RPM="/tmp/mongodb-mongosh-${MONGOSH_VERSION}.x86_64.rpm"
+  curl -fsSL -o "${MONGOSH_RPM}" \
+    "https://downloads.mongodb.com/compass/mongodb-mongosh-${MONGOSH_VERSION}.x86_64.rpm"
+  (dnf install -y "${MONGOSH_RPM}" || yum install -y "${MONGOSH_RPM}")
+  rm -f "${MONGOSH_RPM}"
+fi
+
 # Configure connect-standalone.properties
 cat > "${KAFKA_DIR}/config/connect-standalone.properties" <<CONNECTPROPS
 bootstrap.servers=localhost:9092

@@ -243,10 +243,12 @@ flowchart TB
 
 ### Combined seed-list failover
 
-Both hosts get **the same connection string** — a single
-`mongodb://` URI listing every `mongos` router across all 3 regions,
-built in `provisions.tf` by combining each region's expanded (non-SRV)
-`connection_strings.private_endpoint` entry:
+Both hosts get **the same connection string** — Atlas's own
+PrivateLink SRV record (`connection_strings.private_endpoint[0].srv_connection_string`,
+e.g. `mongodb+srv://distkafka-cluster-pl-0.<id>.mongodb.net`), which
+resolves (via DNS SRV+TXT) to every `mongos` router across all 3
+regions. `provisions.tf` just adds credentials and `readPreference` -
+no manual host-list expansion needed.
 
 ```mermaid
 sequenceDiagram
@@ -302,6 +304,16 @@ defaults:
   change-stream event per poll cycle even with hundreds already
   backlogged, becoming a single-item queueing bottleneck. A large batch
   size lets it drain a backlog in one go.
+
+`setup-connector.sh` also installs `mongosh` on both hosts (downloaded
+directly from MongoDB's official RPM, not via a yum repo) - useful for
+ad-hoc inspection using the exact same combined multi-region connection
+string already sitting in `.env`:
+
+```bash
+set -a; source .env; set +a
+mongosh "$MONGO_URI" --eval "db.hello()"
+```
 
 ---
 
