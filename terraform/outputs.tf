@@ -8,6 +8,11 @@ output "atlas_connection_string_srv" {
   value       = mongodbatlas_advanced_cluster.this.connection_strings.standard_srv
 }
 
+output "atlas_private_connection_strings_srv" {
+  description = "PrivateLink SRV connection strings for the Atlas MONGOS endpoints used by the EC2 clients; empty until PrivateLink is enabled and its connection strings are available."
+  value       = [for endpoint in local.accessible_private_endpoints : endpoint.srv_connection_string]
+}
+
 output "atlas_num_shards" {
   description = "Current number of shards deployed."
   value       = var.nshards

@@ -83,30 +83,4 @@ provider "aws" {
   }
 }
 
-# Frankfurt: no EC2 client runs here, but a private endpoint is still
-# needed in this region for PrivateLink to work at all. Atlas only
-# populates connection_strings.private_endpoint once every region the
-# cluster spans has its own private endpoint - it's all-or-nothing
-# across the whole (multi-region) cluster, not per-region. See
-# atlas.tf's privatelink_frankfurt resources.
-provider "aws" {
-  alias  = "frankfurt"
-  region = "eu-central-1"
-
-  default_tags {
-    tags = local.common_tags
-  }
-
-  ignore_tags {
-    keys = [
-      "mongodb:infosec:creationTime",
-      "mongodb:infosec:lastModifiedTime",
-      "mongodb:infosec:creatorIAMRole",
-      "mongodb:infosec:creatorIAMUser",
-      "mongodb:infosec:creator",
-      "mongodb:infosec:WhatIsThis",
-    ]
-  }
-}
-
 provider "mongodbatlas" {}

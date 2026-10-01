@@ -165,26 +165,28 @@ resource "mongodbatlas_project_ip_access_list" "deployer" {
 }
 
 # ---------------------------------------------------------------------------
-# PrivateLink (disabled by default - set var.privatelink_enabled = true)
+# PrivateLink (enabled by default - set var.privatelink_enabled = false to opt out)
 # ---------------------------------------------------------------------------
 #
-# Atlas only populates connection_strings.private_endpoint once EVERY
-# region the cluster spans has its own private endpoint - it's
-# all-or-nothing across the whole (multi-region) cluster, not
-# per-region (confirmed via MongoDB's own PrivateLink troubleshooting
-# docs: "Private endpoints are only available in multi-region clusters
-# if there is a node within each region that the cluster spans has a
-# private endpoint configured"). This cluster spans London/EU_WEST_2,
-# Ireland/EU_WEST_1, and Frankfurt/EU_CENTRAL_1 - so all three need an
-# endpoint even though only London and Ireland have EC2 clients.
+# Atlas may only populate connection_strings.private_endpoint once EVERY
+# region the cluster spans has a completed private endpoint connection -
+# it's all-or-nothing across the whole (multi-region) cluster, not per-region.
+# This cluster spans London/EU_WEST_2, Ireland/EU_WEST_1, and
+# Frankfurt/EU_CENTRAL_1. Frankfurt's endpoint service is consumed by an
+# interface endpoint hosted in Dublin, so no Frankfurt AWS VPC is needed.
 #
-# Each region needs three resources, in this order:
+# Each connected region needs three resources, in this order:
 #   1. mongodbatlas_privatelink_endpoint  - asks Atlas to create the
 #      AWS-side PrivateLink service; returns endpoint_service_name
 #   2. aws_vpc_endpoint (in ec2.tf)       - the actual AWS interface
 #      endpoint in your VPC, pointed at that service_name
 #   3. mongodbatlas_privatelink_endpoint_service - links the AWS
 #      endpoint's ID back to Atlas to complete the connection
+#
+# Frankfurt uses all three logical PrivateLink resources, but its AWS
+# interface endpoint is hosted in Dublin via AWS cross-region PrivateLink.
+# No Frankfurt AWS VPC, interface endpoint, or endpoint-service attachment
+# is managed by this configuration.
 #
 # (The previous version of this file had resources (1) and (3) above
 # swapped/inverted relative to the actual provider schema, and had no
@@ -209,6 +211,10 @@ resource "mongodbatlas_privatelink_endpoint" "frankfurt" {
   project_id    = var.atlas_project_id
   provider_name = "AWS"
   region        = "EU_CENTRAL_1"
+
+  # The Frankfurt Atlas service is consumed by an interface endpoint hosted
+  # in Dublin, so permit that AWS region as a remote endpoint region.
+  supported_remote_regions = ["EU_WEST_1"]
 }
 
 resource "mongodbatlas_privatelink_endpoint_service" "london" {
@@ -221,7 +227,7 @@ resource "mongodbatlas_privatelink_endpoint_service" "london" {
 
 # Atlas appears to only support one in-flight "add private endpoint
 # connection" operation per project at a time - creating london/
-# ireland/frankfurt's linking resources concurrently (Terraform's
+# ireland's linking resources concurrently (Terraform's
 # default behaviour for independent resources) intermittently fails
 # with "Projects with private endpoints in multiple regions cannot
 # support more than one endpoint in each region", even though each
@@ -241,7 +247,7 @@ resource "mongodbatlas_privatelink_endpoint_service" "frankfurt" {
   count               = var.privatelink_enabled ? 1 : 0
   project_id          = var.atlas_project_id
   private_link_id     = mongodbatlas_privatelink_endpoint.frankfurt[0].private_link_id
-  endpoint_service_id = aws_vpc_endpoint.frankfurt[0].id
+  endpoint_service_id = aws_vpc_endpoint.frankfurt_from_ireland[0].id
   provider_name       = "AWS"
 
   depends_on = [mongodbatlas_privatelink_endpoint_service.ireland]

@@ -14,11 +14,11 @@ bash provisioner scripts uploaded and run over SSH.
 
 Two operating modes, toggled by `var.privatelink_enabled`:
 
-- **Public mode** (default) — EC2 hosts reach Atlas over the public
-  internet, admitted via an IP access list.
-- **PrivateLink mode** — EC2 hosts reach Atlas entirely over AWS
+- **PrivateLink mode** (default) — EC2 hosts reach Atlas entirely over AWS
   PrivateLink, with a Transit Gateway link providing cross-region
   failover if one region's endpoint becomes unavailable.
+- **Public mode** — EC2 hosts reach Atlas over the public internet, admitted
+  via an IP access list. Set `privatelink_enabled = false` to use this mode.
 
 ```mermaid
 flowchart LR
@@ -48,7 +48,7 @@ flowchart LR
 ```
 terraform/
 ├── versions.tf              Provider pins + required_version >= 1.8.0
-├── providers.tf              AWS (default/london/ireland/frankfurt aliases)
+├── providers.tf              AWS (default/london/ireland aliases)
 │                              + MongoDB Atlas providers, default_tags,
 │                              ignore_tags, my-IP lookup, sharding defaults
 ├── variables.tf               All variables with descriptions + validation
@@ -145,7 +145,7 @@ flowchart TB
 
 ## Networking
 
-### Public mode (`privatelink_enabled = false`, default)
+### Public mode (`privatelink_enabled = false`)
 
 ```mermaid
 flowchart LR
@@ -191,14 +191,12 @@ flowchart TB
         ISub["Dedicated subnet 172.33.1.0/24<br/>(secondary CIDR, added by Terraform)"]
         IInst["EC2 jpclient2"]
         IEP["Interface Endpoint<br/>-> Dublin's Atlas PrivateLink service"]
+        IEPF["Interface Endpoint<br/>-> Frankfurt's Atlas PrivateLink service<br/>(cross-region service_region)"]
         ITGWAttach["TGW Attachment"]
         ISub --- IInst
         ISub --- IEP
+        ISub --- IEPF
         ISub --- ITGWAttach
-    end
-
-    subgraph FrankfurtVPC["Frankfurt VPC (eu-central-1)"]
-        FEP["Interface Endpoint<br/>-> Frankfurt's Atlas PrivateLink service<br/>(no EC2 client - exists only because<br/>Atlas requires an endpoint in EVERY<br/>region the cluster spans)"]
     end
 
     LTGW["Transit Gateway<br/>(London)"]
@@ -210,7 +208,7 @@ flowchart TB
 
     LEP -.->|"registers 1 consumer"| LondonAtlas["Atlas: London PrivateLink service"]
     IEP -.->|"registers 1 consumer"| IrelandAtlas["Atlas: Dublin PrivateLink service"]
-    FEP -.->|"registers 1 consumer"| FrankfurtAtlas["Atlas: Frankfurt PrivateLink service"]
+    IEPF -.->|"registers 1 remote-region consumer"| FrankfurtAtlas["Atlas: Frankfurt PrivateLink service"]
 ```
 
 **Why this exact shape:**
@@ -236,18 +234,17 @@ flowchart TB
    comes entirely from the Transit Gateway peering link routing traffic
    to the *one* already-registered endpoint, which Atlas never sees as
    a second consumer.
-4. **Frankfurt gets an endpoint too, with no EC2 client** — Atlas only
-   populates private connection strings once *every* region the cluster
-   spans has a private endpoint; it's all-or-nothing across the whole
-   cluster, not per-region.
+ 4. **Frankfurt is consumed from Dublin** — the Frankfurt Atlas service is
+     connected to an interface endpoint hosted in the Dublin VPC using AWS
+     cross-region PrivateLink. No Frankfurt AWS VPC or other Frankfurt AWS
+     resource is created.
 
 ### Combined seed-list failover
 
-Both hosts get **the same connection string** — Atlas's own
+Both hosts get **the same connection string** when Atlas exposes one — Atlas's own
 PrivateLink SRV record (`connection_strings.private_endpoint[0].srv_connection_string`,
 e.g. `mongodb+srv://distkafka-cluster-pl-0.<id>.mongodb.net`), which
-resolves (via DNS SRV+TXT) to every `mongos` router across all 3
-regions. `provisions.tf` just adds credentials and `readPreference` -
+resolves (via DNS SRV+TXT) to the reachable `mongos` routers. `provisions.tf` just adds credentials and `readPreference` -
 no manual host-list expansion needed.
 
 ```mermaid
@@ -256,7 +253,7 @@ sequenceDiagram
     participant Driver as MongoDB Driver
     participant LM as London mongos (x2)
     participant DM as Dublin mongos (x2)
-    participant FM as Frankfurt mongos (x1)
+    participant FM as Frankfurt mongos (x1, if reachable)
 
     App->>Driver: connect(combined seed list: all 5 mongos)
     Driver->>LM: health check
@@ -391,7 +388,7 @@ useful context if you're extending this further.
 | `ec2_volume_size` | `20` | Root volume GB |
 | `key_pair_name` | `"distkafka-ec2-key"` | AWS key pair name |
 | `java_version` | `"21"` | Amazon Corretto major version |
-| `privatelink_enabled` | `false` | Switch to PrivateLink + cross-region TGW failover (forces sharding) |
+| `privatelink_enabled` | `true` | Use PrivateLink + cross-region TGW failover (forces sharding) |
 | `tag_owner` | `"john.page"` | Owner tag |
 | `tag_purpose` | `"other"` | Purpose tag |
 | `tag_expire_on` | `null` | Expiry (auto 48h from plan time if unset) |
@@ -404,6 +401,7 @@ useful context if you're extending this further.
 |---|---|
 | `atlas_cluster_name` | Cluster name |
 | `atlas_connection_string_srv` | Public SRV connection string |
+| `atlas_private_connection_strings_srv` | PrivateLink SRV connection string(s), when available |
 | `atlas_num_shards` | Current shard count |
 | `jpclient_london_public_ip` / `jpclient_ireland_public_ip` | Elastic IPs |
 | `jpclient_london_hostname` / `jpclient_ireland_hostname` | DNS hostnames |

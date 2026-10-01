@@ -21,14 +21,15 @@ signals a --ready-file only once it actually has a partition assignment
 is subscribed *before* starting the producer, so no early messages are
 missed.
 
-Stops once it has received --expected matching messages, or after
---idle-timeout seconds with no matching messages (whichever comes
-first) - the idle timeout exists purely as a safety net so the script
-can't hang forever if some messages are lost.
+Runs until the orchestrator creates --stop-file. Receiving --expected
+unique matching messages is reported, but never stops the consumer. This
+keeps shutdown under explicit orchestrator control rather than inferring it
+from an idle period or message count.
 
 Usage:
   python3 load_consumer.py --run-id <id> --expected 20000 \
-      [--csv kafka_results.csv] [--ready-file /tmp/ready] [--idle-timeout 30]
+      [--csv kafka_results.csv] [--ready-file /tmp/ready] \
+      --stop-file /tmp/stop-consumer
 
 Requires:
   kafka-python
@@ -111,13 +112,14 @@ def decode_event(raw):
 def main():
     parser = argparse.ArgumentParser(description="Load-test consumer")
     parser.add_argument("--run-id", required=True, help="Must match load_producer.py's --run-id")
-    parser.add_argument("--expected", type=int, required=True, help="Number of messages to wait for")
+    parser.add_argument("--expected", type=int, required=True,
+                        help="Expected message count used for progress reporting")
     parser.add_argument("--csv", default="/home/ec2-user/kafka_results.csv",
                          help="Path to write the receipt log")
     parser.add_argument("--ready-file", default=None,
                          help="Touched once the consumer has a partition assignment")
-    parser.add_argument("--idle-timeout", type=float, default=30.0,
-                         help="Stop after this many seconds with no matching messages")
+    parser.add_argument("--stop-file", required=True,
+                         help="Exit only after this explicit stop file is created")
     parser.add_argument("--progress-interval", type=float, default=2.0)
     args = parser.parse_args()
 
@@ -154,21 +156,17 @@ def main():
     print(f"Consumer ready on topic '{topic}', group '{group_id}'. "
           f"Waiting for {args.expected} messages with run_id={args.run_id}.", flush=True)
 
-    received = 0
+    received_seqs = set()
     start = time.time()
     last_print = start
-    last_matched = start
+    expected_reported = False
     stopped_early = False
 
     with open(args.csv, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["seq", "run_id", "mongo_id", "write_ts_ms", "change_wall_ms", "receipt_ts_ms"])
 
-        while received < args.expected:
-            if time.time() - last_matched > args.idle_timeout:
-                stopped_early = True
-                break
-
+        while not os.path.exists(args.stop_file):
             for msg in consumer:
                 # wall-clock, to match write_ts_ms and the change event's
                 # own server-side wallTime (see load_producer.py's module
@@ -179,6 +177,8 @@ def main():
                     continue
 
                 seq = doc.get("seq")
+                if seq is None or seq in received_seqs:
+                    continue
                 write_ts_ms = doc.get("write_ts_ms")
                 mongo_id = doc.get("_id")
                 writer.writerow([
@@ -187,26 +187,31 @@ def main():
                 ])
                 f.flush()
 
-                received += 1
-                last_matched = time.time()
-
+                received_seqs.add(seq)
                 now = time.time()
                 if now - last_print >= args.progress_interval:
                     elapsed = now - start
-                    print(f"[t+{elapsed:7.1f}s] received {received}/{args.expected}", flush=True)
+                    print(f"[t+{elapsed:7.1f}s] received {len(received_seqs)}/{args.expected}", flush=True)
                     last_print = now
 
-                if received >= args.expected:
-                    break
+                if not expected_reported and len(received_seqs) >= args.expected:
+                    expected_reported = True
+                    print(
+                        f"Reached expected count {args.expected}; "
+                        "continuing until explicit stop signal.",
+                        flush=True,
+                    )
             else:
                 # inner for-loop exhausted its consumer_timeout_ms tick
                 # without a `break` - fall through to outer while check
                 continue
-            break  # inner for-loop hit `break` (expected count reached)
+            # The consumer timeout ends this iterator periodically so the
+            # explicit stop-file check above is responsive.
 
     elapsed = time.time() - start
-    status = "STOPPED EARLY (idle timeout)" if stopped_early else "DONE"
-    print(f"[t+{elapsed:7.1f}s] received {received}/{args.expected} - {status}", flush=True)
+    stopped_early = len(received_seqs) < args.expected
+    status = "STOPPED BEFORE EXPECTED" if stopped_early else "STOPPED BY EXPLICIT SIGNAL"
+    print(f"[t+{elapsed:7.1f}s] received {len(received_seqs)}/{args.expected} - {status}", flush=True)
     print(f"Wrote receipt log to {args.csv}")
 
     if stopped_early:

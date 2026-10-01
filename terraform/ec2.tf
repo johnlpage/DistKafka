@@ -44,16 +44,6 @@ data "aws_vpc" "default_london" {
   default  = true
 }
 
-# Frankfurt has no EC2 client, but needs a default VPC lookup too - see
-# providers.tf's aws.frankfurt alias for why (PrivateLink requires an
-# endpoint in every region the Atlas cluster spans, not just the two
-# regions with actual EC2 hosts).
-data "aws_vpc" "default_frankfurt" {
-  count    = var.privatelink_enabled ? 1 : 0
-  provider = aws.frankfurt
-  default  = true
-}
-
 data "aws_subnets" "default_ireland" {
   provider = aws.ireland
   filter {
@@ -71,19 +61,6 @@ data "aws_subnets" "default_london" {
   filter {
     name   = "vpc-id"
     values = [data.aws_vpc.default_london.id]
-  }
-  filter {
-    name   = "default-for-az"
-    values = ["true"]
-  }
-}
-
-data "aws_subnets" "default_frankfurt" {
-  count    = var.privatelink_enabled ? 1 : 0
-  provider = aws.frankfurt
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default_frankfurt[0].id]
   }
   filter {
     name   = "default-for-az"
@@ -302,9 +279,7 @@ resource "aws_route53_record" "jpclient2" {
 }
 
 # ---------------------------------------------------------------------------
-# PrivateLink: AWS-side interface endpoints (one per region the Atlas
-# cluster spans - see providers.tf/atlas.tf for why Frankfurt is
-# required even with no EC2 client there)
+# PrivateLink: AWS-side interface endpoints for the London and Dublin VPCs.
 # ---------------------------------------------------------------------------
 #
 # Security groups: per AWS's own PrivateLink troubleshooting guidance,
@@ -384,29 +359,6 @@ resource "aws_security_group" "privatelink_ireland" {
   }
 }
 
-resource "aws_security_group" "privatelink_frankfurt" {
-  count       = var.privatelink_enabled ? 1 : 0
-  provider    = aws.frankfurt
-  name        = "distkafka-privatelink-frankfurt-sg"
-  description = "Inbound from the VPC to the Atlas PrivateLink interface endpoint (Frankfurt - no EC2 client here, endpoint only exists to satisfy the all-regions-or-none PrivateLink requirement)"
-  vpc_id      = data.aws_vpc.default_frankfurt[0].id
-
-  ingress {
-    description = "Atlas mongod/mongos ports via PrivateLink load balancer"
-    from_port   = 1024
-    to_port     = 65535
-    protocol    = "tcp"
-    cidr_blocks = [data.aws_vpc.default_frankfurt[0].cidr_block]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
-
 resource "aws_vpc_endpoint" "london" {
   count             = var.privatelink_enabled ? 1 : 0
   provider          = aws.london
@@ -431,12 +383,15 @@ resource "aws_vpc_endpoint" "ireland" {
   security_group_ids = [aws_security_group.privatelink_ireland[0].id]
 }
 
-resource "aws_vpc_endpoint" "frankfurt" {
+# Frankfurt's Atlas PrivateLink service is consumed cross-region by the
+# Dublin VPC. No AWS VPC or interface endpoint is created in Frankfurt.
+resource "aws_vpc_endpoint" "frankfurt_from_ireland" {
   count              = var.privatelink_enabled ? 1 : 0
-  provider           = aws.frankfurt
-  vpc_id             = data.aws_vpc.default_frankfurt[0].id
+  provider           = aws.ireland
+  vpc_id             = data.aws_vpc.default_ireland.id
   service_name       = mongodbatlas_privatelink_endpoint.frankfurt[0].endpoint_service_name
+  service_region     = "eu-central-1"
   vpc_endpoint_type  = "Interface"
-  subnet_ids         = data.aws_subnets.default_frankfurt[0].ids
-  security_group_ids = [aws_security_group.privatelink_frankfurt[0].id]
+  subnet_ids         = [aws_subnet.privatelink_ireland[0].id]
+  security_group_ids = [aws_security_group.privatelink_ireland[0].id]
 }

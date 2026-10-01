@@ -25,7 +25,8 @@
 #      both to confirm readiness (polls the locally-redirected log for
 #      the "Consumer ready" line - no extra SSH round trips needed)
 #   3. Runs load_producer.py synchronously on London only
-#   4. Waits for both consumers to drain/finish
+#   4. Waits five seconds after the producer finishes, explicitly stops both
+#      consumers, then waits for their clean exit
 #   5. Pulls back insert_log.csv (London) + both hosts' kafka_results.csv
 #   6. Runs compute_load_stats.py locally, once per region, against the
 #      shared insert_log so the two are directly comparable
@@ -50,6 +51,27 @@ echo "London:  ${LONDON_IP}  (producer + same-region consumer)"
 echo "Ireland: ${IRELAND_IP}  (cross-region consumer only)"
 echo "Results: ${RESULTS_DIR}"
 echo
+
+# Keep the remotely executed consumer synchronized with this orchestrator.
+# Terraform also uploads this file, but the load test may be run between
+# applies, so do not launch a stale consumer that lacks --stop-file.
+echo "Uploading current load_consumer.py to both hosts..."
+scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" \
+  "${TF_DIR}/scripts/load_consumer.py" \
+  ec2-user@"${LONDON_IP}":/home/ec2-user/load_consumer.py &
+SYNC_UPLOAD_LONDON_PID=$!
+scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" \
+  "${TF_DIR}/scripts/load_consumer.py" \
+  ec2-user@"${IRELAND_IP}":/home/ec2-user/load_consumer.py &
+SYNC_UPLOAD_IRELAND_PID=$!
+wait "${SYNC_UPLOAD_LONDON_PID}"
+wait "${SYNC_UPLOAD_IRELAND_PID}"
+${SSH} ec2-user@"${LONDON_IP}" chmod +x /home/ec2-user/load_consumer.py &
+SYNC_LONDON_PID=$!
+${SSH} ec2-user@"${IRELAND_IP}" chmod +x /home/ec2-user/load_consumer.py &
+SYNC_IRELAND_PID=$!
+wait "${SYNC_LONDON_PID}"
+wait "${SYNC_IRELAND_PID}"
 
 purge_topic() {
   local ip="$1" label="$2"
@@ -84,16 +106,18 @@ echo
 
 LONDON_CONSUMER_LOG="${RESULTS_DIR}/london_consumer.log"
 IRELAND_CONSUMER_LOG="${RESULTS_DIR}/ireland_consumer.log"
+LONDON_STOP_FILE="/tmp/stop_load_consumer_${RUN_ID}"
+IRELAND_STOP_FILE="/tmp/stop_load_consumer_${RUN_ID}"
 
 echo "Starting London (same-region) consumer..."
 ${SSH} ec2-user@"${LONDON_IP}" \
-  "./load_consumer.py --run-id ${RUN_ID} --expected ${COUNT} --csv kafka_results.csv --ready-file /tmp/ready_${RUN_ID} --idle-timeout 30" \
+  "rm -f ${LONDON_STOP_FILE}; ./load_consumer.py --run-id ${RUN_ID} --expected ${COUNT} --csv kafka_results.csv --ready-file /tmp/ready_${RUN_ID} --stop-file ${LONDON_STOP_FILE}" \
   > "${LONDON_CONSUMER_LOG}" 2>&1 &
 LONDON_CONSUMER_PID=$!
 
 echo "Starting Ireland (cross-region) consumer..."
 ${SSH} ec2-user@"${IRELAND_IP}" \
-  "./load_consumer.py --run-id ${RUN_ID} --expected ${COUNT} --csv kafka_results.csv --ready-file /tmp/ready_${RUN_ID} --idle-timeout 30" \
+  "rm -f ${IRELAND_STOP_FILE}; ./load_consumer.py --run-id ${RUN_ID} --expected ${COUNT} --csv kafka_results.csv --ready-file /tmp/ready_${RUN_ID} --stop-file ${IRELAND_STOP_FILE}" \
   > "${IRELAND_CONSUMER_LOG}" 2>&1 &
 IRELAND_CONSUMER_PID=$!
 
@@ -126,11 +150,22 @@ echo "Running producer on London (${COUNT} documents, ${CONCURRENCY} concurrent 
 ${SSH} ec2-user@"${LONDON_IP}" \
   "./load_producer.py --count ${COUNT} --run-id ${RUN_ID} --concurrency ${CONCURRENCY} --log insert_log.csv" \
   | tee "${RESULTS_DIR}/producer.log"
+
+echo "Producer finished. Letting both consumers drain for 5 seconds..."
+sleep 5
+
+echo "Sending explicit stop signals to both consumers..."
+${SSH} ec2-user@"${LONDON_IP}" "touch ${LONDON_STOP_FILE}" &
+STOP_LONDON_PID=$!
+${SSH} ec2-user@"${IRELAND_IP}" "touch ${IRELAND_STOP_FILE}" &
+STOP_IRELAND_PID=$!
+wait "${STOP_LONDON_PID}"
+wait "${STOP_IRELAND_PID}"
 echo
 
-# --- 4. Wait for both consumers to drain/finish ---------------------------
+# --- 4. Wait for both consumers to exit after the explicit stop signal -----
 
-echo "Producer finished. Waiting for both consumers to drain remaining messages..."
+echo "Waiting for both consumers to exit after the explicit stop signal..."
 set +e
 wait "${LONDON_CONSUMER_PID}"; LONDON_CONSUMER_EXIT=$?
 wait "${IRELAND_CONSUMER_PID}"; IRELAND_CONSUMER_EXIT=$?
@@ -144,9 +179,7 @@ cat "${IRELAND_CONSUMER_LOG}"
 for pair in "London:${LONDON_CONSUMER_EXIT}" "Ireland:${IRELAND_CONSUMER_EXIT}"; do
   label="${pair%%:*}"
   exit_code="${pair##*:}"
-  if [ "${exit_code}" -eq 2 ]; then
-    echo "NOTE: ${label} consumer stopped early on its idle timeout - some messages may be missing."
-  elif [ "${exit_code}" -ne 0 ]; then
+  if [ "${exit_code}" -ne 0 ]; then
     echo "WARNING: ${label} consumer exited with code ${exit_code}"
   fi
 done

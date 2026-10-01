@@ -37,6 +37,7 @@ CSV="${HOME_DIR}/kafka_results.csv"
 INSERT_LOG="${HOME_DIR}/insert_log.csv"
 CONSUMER_LOG="${HOME_DIR}/load_consumer.log"
 READY_FILE="/tmp/load_consumer_ready_${RUN_ID}"
+STOP_FILE="/tmp/load_consumer_stop_${RUN_ID}"
 
 # shellcheck disable=SC1091
 source "${HOME_DIR}/.env"
@@ -49,6 +50,7 @@ echo "=== Client: ${CLIENT_LABEL:-unknown} ==="
 : > "${CSV}"
 : > "${INSERT_LOG}"
 rm -f "${READY_FILE}"
+rm -f "${STOP_FILE}"
 
 echo "Purging existing records from Kafka topic '${TOPIC}'..."
 PARTITIONS=$("${KAFKA_DIR}/bin/kafka-topics.sh" --describe --topic "${TOPIC}" --bootstrap-server localhost:9092 \
@@ -74,7 +76,7 @@ python3 "${HOME_DIR}/load_consumer.py" \
   --expected "${COUNT}" \
   --csv "${CSV}" \
   --ready-file "${READY_FILE}" \
-  --idle-timeout 30 \
+  --stop-file "${STOP_FILE}" \
   > "${CONSUMER_LOG}" 2>&1 &
 CONSUMER_PID=$!
 echo "Consumer PID: ${CONSUMER_PID} (log: ${CONSUMER_LOG})"
@@ -109,7 +111,11 @@ python3 "${HOME_DIR}/load_producer.py" \
   --concurrency "${CONCURRENCY}" \
   --log "${INSERT_LOG}"
 
-echo "Producer finished. Waiting for consumer to drain remaining messages..."
+echo "Producer finished. Letting the consumer drain for 5 seconds..."
+sleep 5
+touch "${STOP_FILE}"
+
+echo "Consumer stop signal sent. Waiting for it to exit..."
 
 # (d) wait for the consumer to finish on its own
 set +e
@@ -120,9 +126,7 @@ set -e
 echo "--- consumer log ---"
 cat "${CONSUMER_LOG}"
 
-if [ "${CONSUMER_EXIT}" -eq 2 ]; then
-  echo "NOTE: consumer stopped early on its idle timeout - some messages may be missing (see stats below)."
-elif [ "${CONSUMER_EXIT}" -ne 0 ]; then
+if [ "${CONSUMER_EXIT}" -ne 0 ]; then
   echo "WARNING: consumer exited with code ${CONSUMER_EXIT}"
 fi
 

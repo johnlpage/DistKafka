@@ -9,13 +9,10 @@ locals {
   #
   # When PrivateLink is enabled, BOTH hosts get the SAME combined
   # connection string listing every mongos router from BOTH regions.
-  # Each region still has exactly one Atlas PrivateLink endpoint/one
-  # registered consumer (Atlas's API flatly rejects a second consumer
-  # per regional service - confirmed via a real apply, see below) -
-  # what makes cross-region reachability possible is the Transit
-  # Gateway link in transit_gateway.tf, which routes each region's EC2
-  # host to the OTHER region's already-registered endpoint purely at
-  # the network layer, without Atlas ever seeing a second consumer.
+  # London and Dublin each have a local Atlas PrivateLink endpoint and
+  # consumer. Frankfurt's Atlas service is consumed by a cross-region
+  # interface endpoint hosted in Dublin; no AWS resources are created in
+  # Frankfurt.
   #
   # This combined seed list gives "prefer local, fall back to remote"
   # behaviour for free: the MongoDB driver's own server-selection logic
@@ -25,15 +22,9 @@ locals {
   # logic needed anywhere (producer/consumer scripts or the Kafka
   # connector, which just builds its MongoClient from connection.uri).
   #
-  # (We first tried giving each region a SECOND, cross-region-native
-  # PrivateLink endpoint instead of TGW - Atlas rejected it outright:
-  # "Projects with private endpoints in multiple regions cannot
-  # support more than one endpoint in each region." That's an Atlas
-  # control-plane limit, not a network reachability problem, so no
-  # amount of AWS-side routing trickery can add a second consumer to
-  # an already-consumed regional service - hence TGW routing to the
-  # ONE existing endpoint instead, rather than trying to register a
-  # second one.)
+  # AWS cross-region PrivateLink is used for Frankfurt: the Dublin VPC
+  # endpoint sets service_region to eu-central-1 and Atlas accepts
+  # EU_WEST_1 as a supported remote endpoint region.
   private_endpoints_list = var.privatelink_enabled ? coalesce(
     mongodbatlas_advanced_cluster.this.connection_strings.private_endpoint, []
   ) : []
@@ -42,7 +33,11 @@ locals {
     for pe in local.private_endpoints_list : pe
     if pe.type == "MONGOS" && length([
       for e in pe.endpoints : e.endpoint_id
-      if contains([aws_vpc_endpoint.london[0].id, aws_vpc_endpoint.ireland[0].id], e.endpoint_id)
+      if contains([
+        aws_vpc_endpoint.london[0].id,
+        aws_vpc_endpoint.ireland[0].id,
+        aws_vpc_endpoint.frankfurt_from_ireland[0].id,
+      ], e.endpoint_id)
     ]) > 0
   ]
 
@@ -457,4 +452,3 @@ resource "terraform_data" "loadtest_jpclient2" {
     terraform_data.connector_jpclient2,
   ]
 }
-

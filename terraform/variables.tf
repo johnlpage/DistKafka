@@ -124,13 +124,13 @@ variable "java_version" {
 }
 
 # ---------------------------------------------------------------------------
-# PrivateLink (placeholder, initially disabled)
+# PrivateLink (enabled by default)
 # ---------------------------------------------------------------------------
 
 variable "privatelink_enabled" {
-  description = "Enable PrivateLink between EC2 hosts and Atlas, replacing the public IP access list. Forces the cluster to sharded (see var.nshards) and creates one PrivateLink endpoint per region the cluster spans (London, Dublin, Frankfurt - Atlas requires an endpoint in every region before it populates private connection strings at all). London and Dublin are additionally cross-connected via a Transit Gateway peering link (see transit_gateway.tf) so each host can reach the OTHER region's endpoint too - Atlas's API only allows one consumer per regional PrivateLink service, so this cross-region reachability has to come from network routing (TGW), not a second Atlas registration. Both hosts get one combined mongos seed-list connection string covering every reachable region, giving automatic driver-level failover if either region's endpoint becomes unavailable. See ARCHITECTURE.md for the full design and the real-world gotchas (CIDR overlap, route table quirks) this required working around."
+  description = "Enable PrivateLink between EC2 hosts and Atlas, replacing the public IP access list. Forces the cluster to sharded (see var.nshards), creates Atlas-side PrivateLink services in London, Dublin, and Frankfurt, and connects only the London and Dublin services to AWS VPC interface endpoints. London and Dublin are additionally cross-connected via a Transit Gateway peering link (see transit_gateway.tf) so each host can reach the OTHER region's endpoint too - Atlas's API only allows one consumer per regional PrivateLink service, so this cross-region reachability has to come from network routing (TGW), not a second Atlas registration. Both hosts get one combined mongos seed-list connection string covering every reachable region, giving automatic driver-level failover if either region's endpoint becomes unavailable. See ARCHITECTURE.md for the full design and the real-world gotchas (CIDR overlap, route table quirks) this required working around."
   type        = bool
-  default     = false
+  default     = true
 }
 
 # ---------------------------------------------------------------------------

@@ -224,7 +224,7 @@ not a fixed benchmark environment.
 | `kafka_version` | `"4.3.1"` | Apache Kafka release (KRaft mode) |
 | `kafka_read_preference` | `"primary"` | Read preference for the Kafka connector's connection URI |
 | `ec2_instance_type` | `"t3.medium"` | EC2 instance type (needs enough RAM for both the Kafka broker and Connect JVMs) |
-| `privatelink_enabled` | `false` | Switch to PrivateLink + cross-region Transit Gateway failover instead of public IP access - see [ARCHITECTURE.md](ARCHITECTURE.md) |
+| `privatelink_enabled` | `true` | Use PrivateLink + cross-region Transit Gateway failover instead of public IP access - see [ARCHITECTURE.md](ARCHITECTURE.md) |
 
 Set overrides in `terraform.tfvars` or as `TF_VAR_*` environment variables.
 
@@ -233,6 +233,7 @@ Set overrides in `terraform.tfvars` or as `TF_VAR_*` environment variables.
 After apply, run `terraform output` to see:
 
 - `atlas_connection_string_srv` — SRV connection string for the Atlas cluster
+- `atlas_private_connection_strings_srv` — PrivateLink SRV connection string(s), when available
 - `jpclient_london_public_ip` / `jpclient_ireland_public_ip` — Elastic IPs
 - `jpclient_london_hostname` / `jpclient_ireland_hostname` — DNS hostnames
 - `ssh_command_london` / `ssh_command_ireland` — SSH commands (with
@@ -240,11 +241,11 @@ After apply, run `terraform output` to see:
 
 ## PrivateLink
 
-Disabled by default (`privatelink_enabled = false`, EC2 hosts connect via
-public IP through the Atlas project's IP access list). To enable:
+Enabled by default (`privatelink_enabled = true`, EC2 hosts connect through
+AWS PrivateLink). To opt out and use public IP access instead:
 
 ```bash
-TF_VAR_privatelink_enabled=true terraform apply
+TF_VAR_privatelink_enabled=false terraform apply
 ```
 
 This replaces the public IP access list with AWS PrivateLink, and forces
@@ -254,21 +255,18 @@ query routers, which only exist for sharded clusters.
 
 ### What gets created
 
-- One Atlas PrivateLink endpoint per region the cluster spans: London
-  (`EU_WEST_2`), Dublin/Ireland (`EU_WEST_1`), and Frankfurt
-  (`EU_CENTRAL_1`) - Frankfurt has no EC2 client, but Atlas only
-  populates private connection strings once *every* region the cluster
-  spans has an endpoint (confirmed via MongoDB's own PrivateLink
-  troubleshooting docs - it's all-or-nothing across the whole cluster,
-  not per-region).
-- **Bidirectional cross-region endpoints**: London's VPC also gets an
-  interface endpoint reaching into Dublin's PrivateLink service, and
-  vice versa, using AWS PrivateLink's native cross-region capability
-  (the `service_region` argument on `aws_vpc_endpoint`) - **no VPC
-  peering, Transit Gateway, or VPN required**. An interface endpoint's
-  ENI is normally only reachable from within its own VPC; this AWS
-  feature is what lets a VPC endpoint in one region target a service
-  hosted in a different region directly over the PrivateLink backbone.
+- Atlas-side PrivateLink services in London (`EU_WEST_2`), Dublin/Ireland
+  (`EU_WEST_1`), and Frankfurt (`EU_CENTRAL_1`). Frankfurt is consumed by
+  a cross-region interface endpoint hosted in the Dublin VPC.
+- AWS resources are created only in the London and Dublin VPCs. No Frankfurt
+  AWS VPC, subnet, security group, or provider is used.
+- The Dublin-hosted Frankfurt endpoint uses AWS `service_region =
+  "eu-central-1"`; the Frankfurt Atlas service allows `EU_WEST_1` as its
+  supported remote endpoint region.
+- **Cross-region failover**: London's and Dublin's VPCs each get local
+  interface endpoints, and the Dublin VPC also consumes the Frankfurt Atlas
+  service through AWS cross-region PrivateLink. The existing London/Dublin
+  Transit Gateway link remains available for cross-region network access.
 - Security groups allowing inbound **1024-65535** (not just 27017) on
   each endpoint - Atlas's PrivateLink load balancer multiplexes each
   cluster node onto a different port on the same private IP.
