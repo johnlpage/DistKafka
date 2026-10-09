@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """
 Load-test consumer: consumes change-stream documents (produced via the
-MongoDB Kafka source connector) that were written by load_producer.py,
-filters them by run_id, and writes a receipt log CSV for later latency
-analysis (see compute_load_stats.py).
+MongoDB Kafka source connector watching the `tasks` collection) for the
+task document written by load_producer.py's four-document transaction
+(task/task-outbox/account/account-outbox), filters them by run_id, and
+writes a receipt log CSV for later latency analysis (see
+compute_load_stats.py). Only the task document is observed here - the
+other three documents from the same transaction land in different
+collections not watched by the connector - so the received count still
+matches one row per transaction, same as the old single-document shape.
 
 Each output row also carries `change_wall_ms` - the server-side
 `wallTime` from the change event itself (the moment the write became
@@ -25,6 +30,20 @@ Runs until the orchestrator creates --stop-file. Receiving --expected
 unique matching messages is reported, but never stops the consumer. This
 keeps shutdown under explicit orchestrator control rather than inferring it
 from an idle period or message count.
+
+Also tracks the longest gap between consecutive messages seen from the
+Kafka iterator (from the first message onward) and reports it at the
+end. This script's own MongoClient involvement is zero - it only talks
+to the local Kafka broker - but the MongoDB Kafka Source Connector's own
+MongoClient (watching the change stream directly against mongos) stops
+publishing to the topic for as long as ITS connection to mongos is
+down. So during a mongos failover drill (whether triggered via
+toggle-mongos-block.sh's network-level block, or Atlas's own built-in
+resilience/fault-injection testing feature), this gap is an accurate
+downstream proxy for "how long did it take the
+connector to detect its mongos was down, reconnect, and resume the
+change stream" - no data is lost (the connector resumes from its saved
+resume token), it's purely delayed.
 
 Usage:
   python3 load_consumer.py --run-id <id> --expected 20000 \
@@ -126,7 +145,7 @@ def main():
     load_env()
 
     bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    topic = os.environ.get("KAFKA_TOPIC", "bank.payments")
+    topic = os.environ.get("KAFKA_TOPIC", "bank.tasks")
 
     group_id = f"load-test-{args.run_id}"
     consumer = KafkaConsumer(
@@ -162,16 +181,36 @@ def main():
     expected_reported = False
     stopped_early = False
 
+    # Longest gap between consecutive messages seen from the Kafka
+    # iterator, starting from the first message onward (nothing to
+    # compare the very first message against). Tracked across EVERY
+    # message the iterator yields, including ones later filtered out
+    # below (wrong run_id, duplicate seq) - a filtered-out message
+    # still proves the topic wasn't empty at that moment, so excluding
+    # it would make an unrelated-but-real gap look artificially larger.
+    first_msg_time = None
+    last_msg_time = None
+    max_gap_ms = 0.0
+
     with open(args.csv, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["seq", "run_id", "mongo_id", "write_ts_ms", "change_wall_ms", "receipt_ts_ms"])
 
         while not os.path.exists(args.stop_file):
             for msg in consumer:
+                now = time.time()
+                if first_msg_time is None:
+                    first_msg_time = now
+                else:
+                    gap_ms = (now - last_msg_time) * 1000.0
+                    if gap_ms > max_gap_ms:
+                        max_gap_ms = gap_ms
+                last_msg_time = now
+
                 # wall-clock, to match write_ts_ms and the change event's
                 # own server-side wallTime (see load_producer.py's module
                 # docstring and decode_event() above for why)
-                receipt_ts_ms = time.time() * 1000.0
+                receipt_ts_ms = now * 1000.0
                 doc, wall_time_ms = decode_event(msg.value)
                 if doc is None or doc.get("run_id") != args.run_id:
                     continue
@@ -212,6 +251,10 @@ def main():
     stopped_early = len(received_seqs) < args.expected
     status = "STOPPED BEFORE EXPECTED" if stopped_early else "STOPPED BY EXPLICIT SIGNAL"
     print(f"[t+{elapsed:7.1f}s] received {len(received_seqs)}/{args.expected} - {status}", flush=True)
+    if first_msg_time is None or last_msg_time == first_msg_time:
+        print("Max gap between consumed messages: n/a (fewer than 2 messages received)")
+    else:
+        print(f"Max gap between consumed messages: {max_gap_ms:.0f}ms")
     print(f"Wrote receipt log to {args.csv}")
 
     if stopped_early:

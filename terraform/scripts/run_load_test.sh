@@ -41,7 +41,7 @@ STOP_FILE="/tmp/load_consumer_stop_${RUN_ID}"
 
 # shellcheck disable=SC1091
 source "${HOME_DIR}/.env"
-TOPIC="${KAFKA_TOPIC:-bank.payments}"
+TOPIC="${KAFKA_TOPIC:-bank.tasks}"
 
 echo "=== Load test: run_id=${RUN_ID} count=${COUNT} concurrency=${CONCURRENCY} ==="
 echo "=== Client: ${CLIENT_LABEL:-unknown} ==="

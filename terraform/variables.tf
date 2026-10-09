@@ -68,7 +68,7 @@ variable "db_password" {
 }
 
 variable "db_name" {
-  description = "Application database name. The connector watches the 'payments' collection within this database."
+  description = "Application database name. The connector watches the 'tasks' collection within this database (one task document per producer transaction, alongside account/outbox documents written in the same transaction but not watched by the connector)."
   type        = string
   default     = "bank"
 }
@@ -86,7 +86,7 @@ variable "kafka_version" {
 variable "kafka_topic" {
   description = "Kafka topic the MongoDB Source Connector publishes change events to."
   type        = string
-  default     = "bank.payments"
+  default     = "bank.tasks"
 }
 
 variable "kafka_read_preference" {
@@ -106,9 +106,9 @@ variable "ec2_instance_type" {
 }
 
 variable "ec2_volume_size" {
-  description = "Root EBS volume size in GB for each EC2 host."
+  description = "Root EBS volume size in GB for each EC2 host. Must be >= the latest al2023-ami-*-x86_64 AMI's root snapshot size (30GB as of writing - EC2 rejects a smaller volume_size than the AMI's source snapshot with InvalidBlockDeviceMapping). Check with: aws ec2 describe-images --owners amazon --filters \"Name=name,Values=al2023-ami-*-x86_64\" --query 'reverse(sort_by(Images, &CreationDate))[0].BlockDeviceMappings[0].Ebs.VolumeSize'"
   type        = number
-  default     = 20
+  default     = 30
 }
 
 variable "key_pair_name" {

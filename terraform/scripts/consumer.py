@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Read from the bank.payments Kafka topic and write results to a CSV file.
+Read from the bank.tasks Kafka topic (fed by the connector watching the
+`tasks` collection - the one document per transaction that producer.py's
+four-document transaction writes) and write results to a CSV file.
 Columns: _id, host_created, time_created, time_retrieved
 
 Usage:
@@ -13,7 +15,7 @@ Requires:
 
 Environment variables (from .env):
   KAFKA_BOOTSTRAP_SERVERS - Kafka broker (default: localhost:9092)
-  KAFKA_TOPIC - topic to consume (default: bank.payments)
+  KAFKA_TOPIC - topic to consume (default: bank.tasks)
 """
 
 import os
@@ -108,7 +110,7 @@ def main():
     load_env()
 
     bootstrap_servers = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-    topic = os.environ.get("KAFKA_TOPIC", "bank.payments")
+    topic = os.environ.get("KAFKA_TOPIC", "bank.tasks")
 
     continuous = "--continuous" in sys.argv
     tail_mode = "--tail" in sys.argv

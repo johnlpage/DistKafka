@@ -12,8 +12,8 @@ fi
 
 MONGO_URI="${MONGO_URI:-}"
 MONGO_DB_NAME="${MONGO_DB_NAME:-bank}"
-MONGO_COLLECTION="${MONGO_COLLECTION:-payments}"
-KAFKA_TOPIC="${KAFKA_TOPIC:-bank.payments}"
+MONGO_COLLECTION="${MONGO_COLLECTION:-tasks}"
+KAFKA_TOPIC="${KAFKA_TOPIC:-bank.tasks}"
 
 if [ -z "${MONGO_URI}" ]; then
   echo "ERROR: MONGO_URI not set"
@@ -96,8 +96,8 @@ CONNECTPROPS
 # namespace to KAFKA_TOPIC. Without this, the connector's default naming
 # (topic.prefix + "." + database + "." + collection, when topic.prefix is
 # set) produces a *different* topic than the one this script pre-creates
-# and that consumer.py subscribes to (e.g. "bank.bank.payments" vs.
-# "bank.payments"), silently splitting producer/consumer onto two topics.
+# and that consumer.py subscribes to (e.g. "bank.bank.tasks" vs.
+# "bank.tasks"), silently splitting producer/consumer onto two topics.
 cat > "${KAFKA_DIR}/config/mongodb-source.properties" <<SOURCEPROPS
 name=mongodb-source
 connector.class=com.mongodb.kafka.connect.MongoSourceConnector

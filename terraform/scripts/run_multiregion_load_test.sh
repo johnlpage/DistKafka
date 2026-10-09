@@ -24,10 +24,15 @@
 #      consumer group + auto_offset_reset=latest per host), waits for
 #      both to confirm readiness (polls the locally-redirected log for
 #      the "Consumer ready" line - no extra SSH round trips needed)
-#   3. Runs load_producer.py synchronously on London only
+#   3. Runs load_producer.py synchronously on London only, with
+#      --sdam-log enabled - see load_producer.py's own --help for what
+#      this captures (PyMongo SDAM/command events: server health-check
+#      timing, topology/server state transitions, command failures -
+#      diagnostic data for investigating failover/reconnect delays)
 #   4. Waits five seconds after the producer finishes, explicitly stops both
 #      consumers, then waits for their clean exit
-#   5. Pulls back insert_log.csv (London) + both hosts' kafka_results.csv
+#   5. Pulls back insert_log.csv (London), both hosts' kafka_results.csv,
+#      and London's sdam_producer.jsonl
 #   6. Runs compute_load_stats.py locally, once per region, against the
 #      shared insert_log so the two are directly comparable
 set -euo pipefail
@@ -52,10 +57,11 @@ echo "Ireland: ${IRELAND_IP}  (cross-region consumer only)"
 echo "Results: ${RESULTS_DIR}"
 echo
 
-# Keep the remotely executed consumer synchronized with this orchestrator.
-# Terraform also uploads this file, but the load test may be run between
-# applies, so do not launch a stale consumer that lacks --stop-file.
-echo "Uploading current load_consumer.py to both hosts..."
+# Keep the remotely executed consumer (and producer) synchronized with
+# this orchestrator. Terraform also uploads these files, but the load
+# test may be run between applies, so do not launch a stale consumer
+# that lacks --stop-file, or a stale producer that lacks --sdam-log.
+echo "Uploading current load_consumer.py to both hosts, load_producer.py to London..."
 scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" \
   "${TF_DIR}/scripts/load_consumer.py" \
   ec2-user@"${LONDON_IP}":/home/ec2-user/load_consumer.py &
@@ -64,9 +70,14 @@ scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" \
   "${TF_DIR}/scripts/load_consumer.py" \
   ec2-user@"${IRELAND_IP}":/home/ec2-user/load_consumer.py &
 SYNC_UPLOAD_IRELAND_PID=$!
+scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" \
+  "${TF_DIR}/scripts/load_producer.py" \
+  ec2-user@"${LONDON_IP}":/home/ec2-user/load_producer.py &
+SYNC_UPLOAD_PRODUCER_PID=$!
 wait "${SYNC_UPLOAD_LONDON_PID}"
 wait "${SYNC_UPLOAD_IRELAND_PID}"
-${SSH} ec2-user@"${LONDON_IP}" chmod +x /home/ec2-user/load_consumer.py &
+wait "${SYNC_UPLOAD_PRODUCER_PID}"
+${SSH} ec2-user@"${LONDON_IP}" chmod +x /home/ec2-user/load_consumer.py /home/ec2-user/load_producer.py &
 SYNC_LONDON_PID=$!
 ${SSH} ec2-user@"${IRELAND_IP}" chmod +x /home/ec2-user/load_consumer.py &
 SYNC_IRELAND_PID=$!
@@ -79,7 +90,7 @@ purge_topic() {
   ${SSH} ec2-user@"${ip}" bash -s <<'REMOTE'
 set -euo pipefail
 source /home/ec2-user/.env
-TOPIC="${KAFKA_TOPIC:-bank.payments}"
+TOPIC="${KAFKA_TOPIC:-bank.tasks}"
 KAFKA_DIR="/opt/kafka"
 PARTITIONS=$("${KAFKA_DIR}/bin/kafka-topics.sh" --describe --topic "${TOPIC}" --bootstrap-server localhost:9092 \
   | head -1 | grep -oE 'PartitionCount: *[0-9]+' | grep -oE '[0-9]+')
@@ -148,7 +159,7 @@ echo
 
 echo "Running producer on London (${COUNT} documents, ${CONCURRENCY} concurrent workers)..."
 ${SSH} ec2-user@"${LONDON_IP}" \
-  "./load_producer.py --count ${COUNT} --run-id ${RUN_ID} --concurrency ${CONCURRENCY} --log insert_log.csv" \
+  "./load_producer.py --count ${COUNT} --run-id ${RUN_ID} --concurrency ${CONCURRENCY} --log insert_log.csv --sdam-log sdam_producer.jsonl" \
   | tee "${RESULTS_DIR}/producer.log"
 
 echo "Producer finished. Letting both consumers drain for 5 seconds..."
@@ -191,6 +202,26 @@ echo "Fetching results..."
 scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" ec2-user@"${LONDON_IP}":insert_log.csv "${RESULTS_DIR}/insert_log.csv"
 scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" ec2-user@"${LONDON_IP}":kafka_results.csv "${RESULTS_DIR}/kafka_results_london.csv"
 scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" ec2-user@"${IRELAND_IP}":kafka_results.csv "${RESULTS_DIR}/kafka_results_ireland.csv"
+scp -o StrictHostKeyChecking=no -i "${SSH_KEY}" ec2-user@"${LONDON_IP}":sdam_producer.jsonl "${RESULTS_DIR}/sdam_producer_london.jsonl"
+echo "SDAM debug log (producer, London): ${RESULTS_DIR}/sdam_producer_london.jsonl"
+python3 - "${RESULTS_DIR}/sdam_producer_london.jsonl" <<'PYEOF'
+import collections
+import json
+import sys
+
+counts = collections.Counter()
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        event = json.loads(line)
+        counts[(event["listener"], event["event"])] += 1
+
+print("SDAM event summary:")
+for (listener, kind), n in sorted(counts.items()):
+    print(f"  {listener}.{kind}: {n}")
+PYEOF
 echo
 
 # --- 6. Compute stats locally, once per region -----------------------------

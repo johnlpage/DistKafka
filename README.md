@@ -5,7 +5,9 @@ regions (London x2, Ireland x2, Frankfurt x1), plus two EC2 hosts
 (`jpclient-london.mongosa.net`, in the same region as the Atlas primary;
 `jpclient-ireland.mongosa.net`, a secondary region)
 running Apache Kafka 3.8 and the MongoDB Kafka Source Connector watching
-the `bank.payments` collection.
+the `bank.tasks` collection (each producer write is a four-document
+transaction across `tasks`, `modular_accounts`, and `outbox` - only
+`tasks` is watched by the connector).
 
 ---
 
@@ -41,9 +43,10 @@ The provisioning pipeline runs in three stages:
 1. **Bootstrap** — Installs Java + Kafka 3.8 on both EC2 hosts (runs
    concurrently with Atlas cluster creation)
 2. **Connector** — Installs MongoDB Kafka Connector + Python dependencies,
-   configures it to watch `bank.payments`, starts Kafka Connect
+   configures it to watch `bank.tasks`, starts Kafka Connect
 3. **Smoke test** — Uploads `producer.py` and `consumer.py`, inserts a
-   test document from each host, and verifies it appears in the Kafka topic
+   test four-document transaction (task/task-outbox/account/account-outbox)
+   from each host, and verifies the task document appears in the Kafka topic
 
 Total deployment time: ~15-20 minutes.
 
@@ -67,8 +70,8 @@ Each CSV should contain 2 rows — one insert from each client.
 
 ```bash
 # On either host:
-/home/ec2-user/producer.py           # Insert a document with timestamp
-/home/ec2-user/consumer.py           # Read from Kafka, append to CSV
+/home/ec2-user/producer.py           # Insert a 4-doc transaction (task/outbox/account/outbox)
+/home/ec2-user/consumer.py           # Read the task document from Kafka, append to CSV
 cat /home/ec2-user/kafka_results.csv
 ```
 
@@ -81,8 +84,8 @@ several minutes):
 | Script | Purpose |
 |---|---|
 | `run_load_test.sh [count] [concurrency]` | Orchestrator - run this one. Purges the Kafka topic, empties the CSV/log files, starts the consumer, runs the producer, waits for the consumer to drain, then prints stats. `count` defaults to `20000`, `concurrency` defaults to `20`. |
-| `load_producer.py` | Inserts `count` documents (still one `insert_one()` per document - needed for per-insert timing - but `concurrency` of them in flight at once via a thread pool), embedding `seq` / `run_id` / `write_ts_ms` in each doc. Logs per-insert duration to `insert_log.csv`. Prints progress every 2s. |
-| `load_consumer.py` | Consumes the resulting change-stream events from Kafka (fresh consumer group + `latest` offset per run, so old messages never contaminate results), filters by `run_id`, and logs `change_wall_ms` (the change event's own server-side visibility timestamp) and `receipt_ts_ms` per document to `kafka_results.csv`. |
+| `load_producer.py` | Inserts `count` four-document transactions (task/task-outbox/account/account-outbox per transaction, one `bulk_write()` server call wrapped in `session.with_transaction()` - needed for per-transaction timing - but `concurrency` of them in flight at once via a thread pool), embedding `seq` / `run_id` / `write_ts_ms` in the task document. Retries the whole transaction (same four `_id`s) if an attempt doesn't complete within `--write-timeout` seconds. Logs per-transaction duration to `insert_log.csv`. Prints progress every 2s. |
+| `load_consumer.py` | Consumes the resulting change-stream events for the `tasks` collection from Kafka (fresh consumer group + `latest` offset per run, so old messages never contaminate results), filters by `run_id`, and logs `change_wall_ms` (the change event's own server-side visibility timestamp) and `receipt_ts_ms` per document to `kafka_results.csv`. |
 | `compute_load_stats.py` | Joins `insert_log.csv` and `kafka_results.csv` on `seq` and prints sent/received/missing counts plus min/mean/p95/p99/max for three latency phases (see below). |
 
 Run it on either host:

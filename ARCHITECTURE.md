@@ -9,8 +9,10 @@ preview — no extra tooling needed to view them.
 Provisions a MongoDB Atlas cluster spread across 3 AWS regions, plus 2 EC2
 application hosts (London + Dublin) each running their own local Apache
 Kafka broker and a MongoDB Kafka Source Connector watching the same
-`bank.payments` collection. Everything is Terraform; host configuration is
-bash provisioner scripts uploaded and run over SSH.
+`bank.tasks` collection (each producer write is a four-document
+transaction across `tasks`, `modular_accounts`, and `outbox` - only
+`tasks` is watched by the connector). Everything is Terraform; host
+configuration is bash provisioner scripts uploaded and run over SSH.
 
 Two operating modes, toggled by `var.privatelink_enabled`:
 
@@ -328,7 +330,9 @@ usage. Summary of the tooling:
 The four latency metrics (see `compute_load_stats.py`'s own docstring for
 the full reasoning):
 
-1. **Insert time** — the client's full `insert_one()` round-trip.
+1. **Insert time** — the client's full transaction round-trip (one
+   `bulk_write()` server call across the task/task-outbox/account/
+   account-outbox namespaces, wrapped in `session.with_transaction()`).
 2. **Mongo visibility time** — `write_ts_ms` → the change event's own
    server-side `wallTime` (majority-commit moment).
 3. **Kafka pipeline time** — `wallTime` → consumer receipt (Kafka
@@ -380,9 +384,9 @@ useful context if you're extending this further.
 | `atlas_backup_enabled` | `true` | Enable Atlas cloud backups |
 | `db_username` | `"distkafkaApp"` | Database user name |
 | `db_password` | *(required)* | Database user password |
-| `db_name` | `"bank"` | Application database (collection: `payments`) |
+| `db_name` | `"bank"` | Application database (watched collection: `tasks`) |
 | `kafka_version` | `"4.3.1"` | Apache Kafka release (KRaft mode) |
-| `kafka_topic` | `"bank.payments"` | Kafka topic the connector publishes to |
+| `kafka_topic` | `"bank.tasks"` | Kafka topic the connector publishes to |
 | `kafka_read_preference` | `"primary"` | Read preference for the Kafka connector's connection URI |
 | `ec2_instance_type` | `"t3.medium"` | EC2 instance type (needs enough RAM for 2 JVMs) |
 | `ec2_volume_size` | `20` | Root volume GB |

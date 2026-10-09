@@ -81,7 +81,7 @@ locals {
   rendered_env_jpclient1 = templatefile("${path.module}/templates/env.tpl", {
     mongo_uri       = local.mongo_uri
     db_name         = var.db_name
-    collection_name = "payments"
+    collection_name = "tasks"
     kafka_topic     = var.kafka_topic
     client_label    = "London (EU_WEST_2) - same region as Atlas primary"
   })
@@ -89,7 +89,7 @@ locals {
   rendered_env_jpclient2 = templatefile("${path.module}/templates/env.tpl", {
     mongo_uri       = local.mongo_uri
     db_name         = var.db_name
-    collection_name = "payments"
+    collection_name = "tasks"
     kafka_topic     = var.kafka_topic
     client_label    = "Ireland (EU_WEST_1) - secondary Atlas region"
   })

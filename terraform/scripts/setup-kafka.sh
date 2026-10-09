@@ -117,7 +117,7 @@ fi
 
 # Create topic early
 "${KAFKA_DIR}/bin/kafka-topics.sh" --create --if-not-exists \
-  --topic "${KAFKA_TOPIC:-bank.payments}" \
+  --topic "${KAFKA_TOPIC:-bank.tasks}" \
   --bootstrap-server localhost:9092 \
   --partitions 3 \
   --replication-factor 1 || true
